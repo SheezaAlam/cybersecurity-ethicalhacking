@@ -1,0 +1,167 @@
+
+# Install Kali Linux on VMware (Step-by-Step)
+
+This guide documents how I installed Kali Linux on VMware Workstation Player (Windows 10/11). It uses the official **Installer 64-bit ISO**, not a prebuilt VM image.
+
+## Prerequisites
+
+* A 64-bit CPU with virtualization support (**Intel VT-x** or **AMD-V**)
+* At least **2 CPU cores**, **4 GB RAM** (6–8 GB recommended), and **40 GB** free disk space
+* Windows 10/11 with admin rights
+
+### Enable virtualization in BIOS/UEFI
+
+1. Reboot your PC, enter BIOS/UEFI setup.
+2. Enable **Intel VT-x** or **AMD-V** (sometimes called **SVM**), save and exit.
+3. In Windows, open **Task Manager → Performance → CPU** and confirm **Virtualization: Enabled**.
+
+### Avoid Hyper-V conflicts (if VMware complains)
+
+Open **Windows Terminal (Admin)** and run:
+
+```powershell
+bcdedit /set hypervisorlaunchtype off
+```
+
+Restart Windows. If needed, also turn off these in **Windows Features**:
+
+* Hyper-V
+* Windows Hypervisor Platform
+* Virtual Machine Platform
+
+Disable **Memory Integrity**: Windows Security → Device Security → Core isolation.
+
+## Downloads
+
+1. **Kali Linux (Installer ISO, 64-bit)**
+   From the official Kali website → **Get Kali → Installer Images**.
+   File name looks like: `kali-linux-20xx.x-installer-amd64.iso`.
+
+2. **VMware Workstation Player (Windows)**
+   From VMware’s official site. Install with defaults.
+
+### (Optional) Verify ISO checksum
+
+In PowerShell, run inside the folder where the ISO is saved:
+
+```powershell
+Get-FileHash .\kali-linux-*-installer-amd64.iso -Algorithm SHA256
+```
+
+Compare the output with the SHA256 hash on Kali’s download page.
+
+## Create the VM in VMware
+
+1. Open **VMware Workstation Player** → **Create a New Virtual Machine**.
+2. Choose **Installer disc image file (iso)** and browse to the Kali ISO.
+3. Guest OS:
+
+   * **Linux**
+   * **Debian 12.x 64-bit** (or Debian 11 64-bit if 12 isn’t listed)
+4. Name: `Kali Linux` and choose a VM location.
+5. Processors: **2** cores (use more if available).
+6. Memory: **4096 MB** minimum (6144–8192 MB recommended).
+7. Network: **NAT** (safer for beginners; can change later).
+8. Disk: **40 GB** (or more) → **Store as a single file**.
+9. Customize Hardware:
+
+   * **Display**: check **Accelerate 3D graphics**
+   * **Options → Guest Isolation**: enable **Copy and paste** and **Drag and drop**
+10. Finish.
+
+## Install Kali (inside the VM)
+
+1. Power on the VM → choose **Graphical install**.
+2. Select language, location, keyboard.
+3. Hostname: `kali` (or any). Leave **Domain name** blank unless joining an org domain.
+4. Create a normal user and set a strong password.
+5. Time zone: select your region/city. If you only see U.S. zones, fix later with `tzdata` (see Troubleshooting).
+6. Partitioning: **Guided – use entire disk** → **All files in one partition** → **Finish** → **Write changes to disk = Yes**.
+7. Network mirror: **Yes** (recommended).
+8. Install **GRUB** to the primary disk (e.g., `/dev/sda`) → **Yes**.
+9. Reboot when installation completes.
+
+## First boot setup
+
+Log in with the user you created, then open Terminal:
+
+### Update and upgrade
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+```
+
+### VMware guest tools (clipboard, auto-resize)
+
+```bash
+sudo apt install -y open-vm-tools open-vm-tools-desktop
+sudo reboot
+```
+
+## If you boot to a text console (no desktop)
+
+If you see a login like `kali tty1` instead of a graphical login, install and enable XFCE + LightDM:
+
+```bash
+sudo apt update
+sudo apt install -y kali-desktop-xfce lightdm
+sudo systemctl enable lightdm --now
+```
+
+If prompted to choose a display manager, select **lightdm**. Reboot if the GUI doesn’t appear immediately:
+
+```bash
+sudo reboot
+```
+
+## Optional tuning
+
+### Set correct time zone (if wrong during install)
+
+```bash
+sudo dpkg-reconfigure tzdata
+```
+
+Choose your **Region → City** (for example, `Asia → Karachi`).
+
+### Take a clean snapshot (recommended)
+
+In VMware Player: **Player → Manage → Snapshot**. This lets you roll back easily later.
+
+### Install additional tool groups when needed
+
+```bash
+sudo apt update
+sudo apt install kali-tools-wireless
+sudo apt install kali-tools-web
+```
+
+## Quick troubleshooting
+
+* **VMX/AMD-V disabled or 64-bit guests unavailable**
+  Enable virtualization in BIOS/UEFI (see Prerequisites).
+
+* **Black screen or stuck at console**
+  Ensure LightDM is installed and running:
+
+  ```bash
+  sudo systemctl status lightdm
+  sudo systemctl start lightdm
+  sudo systemctl enable lightdm
+  ```
+
+* **No internet in VM**
+  In VMware, check **Player → Removable Devices → Network Adapter** is **Connected** (NAT). In Kali:
+
+  ```bash
+  sudo dhclient -v
+  ```
+
+* **VMware vs Hyper-V conflict**
+  Disable Hyper-V as shown above and reboot.
+
+## Notes
+
+* This guide uses the **Installer ISO**, not prebuilt images, so you control partitioning, users, and configuration.
+* NAT networking is recommended for safety. Switch to Bridged only if you know why you need it.
+
