@@ -1,7 +1,6 @@
 # Cybersecurity & Ethical Hacking – Learning Journal
 
 This repository documents my daily progress in the **Cybersecurity & Ethical Hacking program** conducted by NED University, Government of Sindh.
-It includes both **theoretical understanding (80%)** and **practical exercises (20%)**, updated consistently to reflect my learning journey.
 
 ---
 
