@@ -1,0 +1,23 @@
+Open Burp → Proxy → Options — ensure a listener exists on 127.0.0.1:8080 and is Running.
+
+In Firefox → Preferences → Network Settings → Manual proxy configuration:
+
+HTTP Proxy: 127.0.0.1 Port: 8080
+
+Check Use this proxy for all protocols
+
+Click OK.
+
+In Burp: Proxy → Intercept — toggle Off to browse normally, On to hold requests.
+
+In Firefox visit: http://burpsuite → Download cacert.der → Preferences → Privacy & Security → View Certificates → Authorities → Import → trust it.
+
+Test browsing: visit http://example.com and then https://example.com. Requests should appear in Burp → Proxy → HTTP history.
+
+Minimal troubleshooting notes:
+
+If ss -lntp | grep 8080 prints nothing: add listener in Burp Proxy → Options.
+
+If pages hang, turn Intercept Off.
+
+If HTTPS shows cert errors after import, restart Firefox.
