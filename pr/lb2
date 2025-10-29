@@ -80,4 +80,79 @@ def decrypt_file(file_path, password, output_path):
             f.write(plaintext)
         print(f"🔓 File decrypted successfully → {output_path}")
     except ValueError:
-        print("❌ Decryption failed! The password may be incorrect o
+        print("❌ Decryption failed! The password may be incorrect or the file was tampered with.")
+    except Exception as e:
+        print(f"⚠️ Error: {e}")
+
+# ---------- Demo ----------
+def demo():
+    sample_path = "/home/shiza/Desktop/secret.txt"
+    encrypted_path = "/home/shiza/Desktop/secret.txt.enc"
+    decrypted_path = "/home/shiza/Desktop/secret_decrypted.txt"
+    password = "TestPass123"
+
+    # Create a sample file
+    with open(sample_path, "w") as f:
+        f.write("This is a secret message. Protect it carefully!")
+
+    print("\n--- Demo: Encrypting File ---")
+    encrypt_file(sample_path, password, encrypted_path)
+
+    print("\n--- Demo: Storing Integrity Hash ---")
+    file_hash = compute_hash(sample_path)
+    store_hash(sample_path, file_hash)
+    print(f"🧾 Hash stored in database for integrity check.\n")
+
+    print("--- Demo: Checking Integrity ---")
+    check_integrity(sample_path)
+
+    print("\n--- Demo: Decrypting File ---")
+    decrypt_file(encrypted_path, password, decrypted_path)
+
+# ---------- Main CLI ----------
+def main():
+    init_db()
+
+    parser = argparse.ArgumentParser(description="File Encryption + Integrity Checker Tool")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Encrypt
+    enc = subparsers.add_parser("encrypt")
+    enc.add_argument("file", help="Path to input file")
+    enc.add_argument("-p", "--password", required=True, help="Password for encryption")
+    enc.add_argument("-o", "--output", required=True, help="Output encrypted file path")
+
+    # Decrypt
+    dec = subparsers.add_parser("decrypt")
+    dec.add_argument("file", help="Path to encrypted file")
+    dec.add_argument("-p", "--password", required=True, help="Password for decryption")
+    dec.add_argument("-o", "--output", required=True, help="Output decrypted file path")
+
+    # Integrity Check
+    integ = subparsers.add_parser("integrity-check")
+    integ.add_argument("file", help="Path to file to check or store")
+    integ.add_argument("--store", action="store_true", help="Store hash instead of checking")
+
+    # Demo
+    subparsers.add_parser("demo")
+
+    args = parser.parse_args()
+
+    if args.command == "encrypt":
+        encrypt_file(args.file, args.password, args.output)
+    elif args.command == "decrypt":
+        decrypt_file(args.file, args.password, args.output)
+    elif args.command == "integrity-check":
+        if args.store:
+            hash_val = compute_hash(args.file)
+            store_hash(args.file, hash_val)
+            print(f"✅ Stored hash for {args.file}")
+        else:
+            check_integrity(args.file)
+    elif args.command == "demo":
+        demo()
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()
