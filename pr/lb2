@@ -1,0 +1,550 @@
+Nice — I made a single, ready-to-run `filetool.py` that:
+
+* Uses an **SQLite DB at `/home/shiza/Desktop/integrity.db`** (per your path).
+* Implements **encrypt / decrypt / add-hash / verify / scan-add / check-dir** subcommands.
+* Adds a convenience **`demo`** subcommand that automatically runs the whole demonstration sequence in `/home/shiza/Desktop/filetool_demo` (creates files there, baselines the hash, encrypts, tampers, verifies, decrypts, and prints results). Run it in front of your teacher to show everything in one go.
+
+> Save the code below as `/home/shiza/Desktop/filetool.py` (or copy it to your preferred folder), mark it executable (`chmod +x filetool.py`) and run the demo with `python3 filetool.py demo`.
+
+---
+
+### `filetool.py` (complete — with DB set to `/home/shiza/Desktop/integrity.db` and an automatic demo)
+
+```python
+#!/usr/bin/env python3
+"""
+filetool.py
+
+Single-file project: AES-GCM file encrypter/decrypter + integrity checker using SHA-256.
+DB is placed at /home/shiza/Desktop/integrity.db by default (per user request).
+
+Dependencies:
+    pip install pycryptodome
+
+Usage:
+    python3 filetool.py -h
+    python3 filetool.py demo        # runs the automated demo in /home/shiza/Desktop/filetool_demo
+"""
+
+import argparse
+import sqlite3
+import os
+import sys
+import hashlib
+import json
+import time
+import shutil
+from pathlib import Path
+from datetime import datetime
+from getpass import getpass
+from typing import Optional, Tuple
+
+# Crypto imports (PyCryptodome)
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Protocol.KDF import PBKDF2
+    from Crypto.Random import get_random_bytes
+    from Crypto.Hash import SHA256
+except Exception as e:
+    print("[!] Missing dependency: pycryptodome. Install with: pip install pycryptodome")
+    raise
+
+# ---- Configuration ----
+# Database path (absolute) — set to user's Desktop as requested
+DB_PATH = Path("/home/shiza/Desktop/integrity.db")
+MAGIC = b"FT01"        # 4 bytes magic header to identify our file format
+VERSION = b"\x01"      # 1 byte version
+SALT_SIZE = 16         # bytes
+NONCE_SIZE = 12        # bytes (recommended for AES-GCM)
+PBKDF2_ITER = 200_000  # iterations for key derivation
+KEY_LEN = 32           # 256-bit AES key
+CHUNK_SIZE = 64 * 1024 # 64KB streaming
+
+# ---- Utility functions ----
+
+def derive_key(password: str, salt: bytes, iterations: int = PBKDF2_ITER) -> bytes:
+    """Derive a symmetric key from a password and salt using PBKDF2-HMAC-SHA256."""
+    return PBKDF2(password, salt, dkLen=KEY_LEN, count=iterations, hmac_hash_module=SHA256)
+
+def sha256_of_file(path: Path) -> str:
+    """Return hex SHA-256 digest of file (streaming)."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+# ---- Encryption / Decryption ----
+
+def encrypt_file(in_path: Path, out_path: Path, password: str, associated_data: Optional[bytes] = None) -> None:
+    """
+    Encrypt file with AES-GCM. Output layout:
+    [MAGIC(4)] [VER(1)] [SALT(16)] [NONCE(12)] [CIPHERTEXT ...] [TAG(16)]
+    """
+    salt = get_random_bytes(SALT_SIZE)
+    key = derive_key(password, salt)
+    nonce = get_random_bytes(NONCE_SIZE)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    if associated_data:
+        cipher.update(associated_data)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with in_path.open("rb") as fin, out_path.open("wb") as fout:
+        fout.write(MAGIC)
+        fout.write(VERSION)
+        fout.write(salt)
+        fout.write(nonce)
+        while True:
+            chunk = fin.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            ct = cipher.encrypt(chunk)
+            fout.write(ct)
+        tag = cipher.digest()
+        fout.write(tag)
+
+def decrypt_file(in_path: Path, out_path: Path, password: str, associated_data: Optional[bytes] = None) -> None:
+    """
+    Decrypt file produced by encrypt_file. Raises ValueError on auth failure.
+    """
+    with in_path.open("rb") as fin:
+        header_len = len(MAGIC) + 1 + SALT_SIZE + NONCE_SIZE
+        header = fin.read(header_len)
+        if len(header) < header_len:
+            raise ValueError("File too short or not a valid encrypted file")
+
+        magic = header[:4]
+        if magic != MAGIC:
+            raise ValueError("Invalid file magic")
+        version = header[4:5]
+        if version != VERSION:
+            raise ValueError(f"Unsupported version: {version}")
+
+        salt = header[5:5+SALT_SIZE]
+        nonce = header[5+SALT_SIZE:5+SALT_SIZE+NONCE_SIZE]
+        key = derive_key(password, salt)
+
+        rest = fin.read()
+        if len(rest) < 16:
+            raise ValueError("File corrupted or missing auth tag")
+        ciphertext = rest[:-16]
+        tag = rest[-16:]
+
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        if associated_data:
+            cipher.update(associated_data)
+        try:
+            plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+        except ValueError as e:
+            raise ValueError("Decryption failed - authentication tag mismatch") from e
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("wb") as fout:
+            fout.write(plaintext)
+
+# ---- Integrity DB ----
+
+def init_db(db_path: Path = DB_PATH) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT UNIQUE,
+        sha256 TEXT,
+        added_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_file_hash(path: Path, db_path: Path = DB_PATH) -> None:
+    path = path.resolve()
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    h = sha256_of_file(path)
+    t = datetime.utcnow().isoformat() + "Z"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO files (path, sha256, added_at) VALUES (?, ?, ?)", (str(path), h, t))
+    conn.commit()
+    conn.close()
+
+def get_db_record(path: Path, db_path: Path = DB_PATH) -> Optional[Tuple[int, str, str]]:
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("SELECT id, sha256, added_at FROM files WHERE path=?", (str(path.resolve()),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def verify_file_hash(path: Path, db_path: Path = DB_PATH) -> Tuple[bool, Optional[str], Optional[str]]:
+    row = get_db_record(path, db_path)
+    if row is None:
+        return (False, None, None)
+    stored = row[1]
+    if not path.exists():
+        return (False, stored, None)
+    current = sha256_of_file(path)
+    return (stored == current, stored, current)
+
+# ---- Command implementations ----
+
+def ensure_db():
+    if not DB_PATH.exists():
+        print(f"[+] Creating DB at {DB_PATH}")
+        init_db(DB_PATH)
+
+def cmd_initdb(args):
+    init_db(DB_PATH)
+    print(f"[+] Initialized DB at {DB_PATH}")
+
+def cmd_addhash(args):
+    ensure_db()
+    p = Path(args.path)
+    add_file_hash(p, DB_PATH)
+    print(f"[+] Added/updated hash for {p.resolve()}")
+
+def cmd_verify(args):
+    ensure_db()
+    p = Path(args.path)
+    ok, stored, current = verify_file_hash(p, DB_PATH)
+    if stored is None:
+        print(f"[-] No record found for {p.resolve()} in DB.")
+        return
+    if current is None:
+        print(f"[-] File missing: {p.resolve()}. Stored hash: {stored}")
+        return
+    print(f"[i] Stored:  {stored}")
+    print(f"[i] Current: {current}")
+    if ok:
+        print("[+] OK — hashes match.")
+    else:
+        print("[-] MISMATCH — file modified!")
+
+def cmd_checkdir(args):
+    ensure_db()
+    base = Path(args.path).resolve()
+    if not base.exists():
+        print(f"[-] Path not found: {base}")
+        return
+    conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    like = str(base) + '%'
+    cur.execute("SELECT path, sha256 FROM files WHERE path LIKE ?", (like,))
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        print("[i] No DB records under this directory.")
+        return
+    mismatches = 0
+    for path_str, stored in rows:
+        p = Path(path_str)
+        if not p.exists():
+            print(f"[-] MISSING: {p}")
+            mismatches += 1
+            continue
+        current = sha256_of_file(p)
+        if current != stored:
+            print(f"[-] MODIFIED: {p}")
+            print(f"    stored:  {stored}")
+            print(f"    current: {current}")
+            mismatches += 1
+        else:
+            print(f"[+] OK: {p}")
+    print(f"[i] Completed. mismatches={mismatches}")
+
+def cmd_encrypt(args):
+    in_path = Path(args.input)
+    if not in_path.exists():
+        print(f"[-] Input not found: {in_path}")
+        return
+    out_path = Path(args.output) if args.output else in_path.with_suffix(in_path.suffix + ".enc")
+    if out_path.exists() and not args.overwrite:
+        print(f"[-] Output file exists ({out_path}); use --overwrite to replace.")
+        return
+    pwd = args.password or getpass("Password: ")
+    try:
+        encrypt_file(in_path, out_path, pwd)
+        print(f"[+] Encrypted {in_path} -> {out_path}")
+    except Exception as e:
+        print("[-] Encryption failed:", str(e))
+
+def cmd_decrypt(args):
+    in_path = Path(args.input)
+    if not in_path.exists():
+        print(f"[-] Input not found: {in_path}")
+        return
+    out_path = Path(args.output) if args.output else in_path.with_suffix(".dec")
+    if out_path.exists() and not args.overwrite:
+        print(f"[-] Output file exists ({out_path}); use --overwrite to replace.")
+        return
+    pwd = args.password or getpass("Password: ")
+    try:
+        decrypt_file(in_path, out_path, pwd)
+        print(f"[+] Decrypted {in_path} -> {out_path}")
+    except Exception as e:
+        print("[-] Decryption failed:", str(e))
+
+def cmd_scan_add(args):
+    ensure_db()
+    base = Path(args.path).resolve()
+    if not base.exists():
+        print(f"[-] Path not found: {base}")
+        return
+    count = 0
+    for root, dirs, files in os.walk(base):
+        for fn in files:
+            p = Path(root) / fn
+            try:
+                add_file_hash(p, DB_PATH)
+                count += 1
+                print(f"[+] Added: {p}")
+            except Exception as e:
+                print(f"[-] Failed {p}: {e}")
+    print(f"[i] Completed. {count} files added/updated.")
+
+# ---- Demo sequence (automated) ----
+
+def cmd_demo(args):
+    """
+    Automated demo that creates /home/shiza/Desktop/filetool_demo and runs:
+      - init-db
+      - create secret.txt
+      - add-hash secret.txt
+      - encrypt secret.txt (TestPass123!)
+      - verify secret.txt (should be OK)
+      - tamper secret.txt
+      - verify secret.txt (should show mismatch)
+      - decrypt secret.txt.enc -> secret_decrypted.txt
+      - show files & hashes
+    """
+    demo_base = Path("/home/shiza/Desktop/filetool_demo").resolve()
+    if demo_base.exists():
+        print(f"[i] Removing existing demo folder: {demo_base}")
+        shutil.rmtree(demo_base)
+    demo_base.mkdir(parents=True, exist_ok=True)
+    print(f"[+] Demo directory created: {demo_base}")
+
+    # Initialize DB
+    init_db(DB_PATH)
+    print(f"[+] DB initialized at {DB_PATH}")
+
+    # Create secret file
+    secret = demo_base / "secret.txt"
+    secret.write_text("Top secret content — demo\n")
+    print(f"[+] Created secret file: {secret}")
+
+    # Add baseline hash
+    add_file_hash(secret, DB_PATH)
+    print(f"[+] Baseline hash stored for: {secret}")
+
+    # Encrypt
+    enc = demo_base / "secret.txt.enc"
+    demo_password = "TestPass123!"
+    encrypt_file(secret, enc, demo_password)
+    print(f"[+] Encrypted -> {enc}")
+
+    # Verify (should be OK)
+    ok, stored, current = verify_file_hash(secret, DB_PATH)
+    print("\n[VERIFY BEFORE TAMPER]")
+    print(f"Stored:  {stored}")
+    print(f"Current: {current}")
+    print("[+] Match?" , ok)
+
+    # Tamper the file
+    with secret.open("a") as f:
+        f.write("malicious change\n")
+    print(f"\n[+] Tampered file: appended to {secret}")
+
+    # Verify (should be MISMATCH)
+    ok2, stored2, current2 = verify_file_hash(secret, DB_PATH)
+    print("\n[VERIFY AFTER TAMPER]")
+    print(f"Stored:  {stored2}")
+    print(f"Current: {current2}")
+    print("[+] Match?" , ok2)
+
+    # Decrypt the encrypted copy
+    dec = demo_base / "secret_decrypted.txt"
+    try:
+        decrypt_file(enc, dec, demo_password)
+        print(f"\n[+] Decrypted {enc} -> {dec}")
+        print("---- Decrypted file contents ----")
+        print(dec.read_text())
+        print("---- end ----")
+    except Exception as e:
+        print("[-] Decrypt failed:", e)
+
+    # Show DB entries for demo files
+    print("\n[i] DB entries (for demo files):")
+    conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    cur.execute("SELECT id, path, sha256, added_at FROM files WHERE path LIKE ?", (str(demo_base) + '%',))
+    rows = cur.fetchall()
+    if not rows:
+        print("[i] No DB rows under demo path (note: DB stores absolute paths).")
+    else:
+        for r in rows:
+            print(r)
+    conn.close()
+    print("\n[+] Demo complete. Inspect /home/shiza/Desktop/filetool_demo and integrity.db")
+
+# ---- Argument parser ----
+
+def build_parser():
+    ap = argparse.ArgumentParser(description="File encrypter + integrity checker (single-file project)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init-db", help="Initialize integrity DB")
+    p.set_defaults(func=cmd_initdb)
+
+    p = sub.add_parser("add-hash", help="Add single file's SHA256 to DB (or update existing)")
+    p.add_argument("path", help="Path to file")
+    p.set_defaults(func=cmd_addhash)
+
+    p = sub.add_parser("verify", help="Verify a single file against DB record")
+    p.add_argument("path", help="Path to file")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("check-dir", help="Verify all DB-tracked files under a directory")
+    p.add_argument("path", help="Directory path")
+    p.set_defaults(func=cmd_checkdir)
+
+    p = sub.add_parser("scan-add", help="Recursively add all files in directory to DB (like 'baseline')")
+    p.add_argument("path", help="Directory path")
+    p.set_defaults(func=cmd_scan_add)
+
+    p = sub.add_parser("encrypt", help="Encrypt a file (AES-GCM, password-derived key)")
+    p.add_argument("input", help="Input file path")
+    p.add_argument("-o", "--output", help="Output file path (defaults to input + .enc)")
+    p.add_argument("-p", "--password", help="Password (if omitted, prompt interactively)")
+    p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
+    p.set_defaults(func=cmd_encrypt)
+
+    p = sub.add_parser("decrypt", help="Decrypt a file created by this tool")
+    p.add_argument("input", help="Encrypted file path")
+    p.add_argument("-o", "--output", help="Output file path (defaults to input + .dec)")
+    p.add_argument("-p", "--password", help="Password (if omitted, prompt interactively)")
+    p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
+    p.set_defaults(func=cmd_decrypt)
+
+    p = sub.add_parser("demo", help="Run automated demo (creates /home/shiza/Desktop/filetool_demo)")
+    p.set_defaults(func=cmd_demo)
+
+    return ap
+
+def main():
+    ap = build_parser()
+    args = ap.parse_args()
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        print("\n[!] Aborted by user.")
+    except Exception as e:
+        print("[-] Error:", e)
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## How to set up and run this on Kali (step-by-step for your teacher demo)
+
+1. **Open terminal** on Kali.
+
+2. **Install Python dependency** (only once):
+
+```bash
+# optional venv
+python3 -m venv ~/venv_filetool
+source ~/venv_filetool/bin/activate
+
+pip install --upgrade pip
+pip install pycryptodome
+```
+
+3. **Save the script** to `/home/shiza/Desktop/filetool.py` (use nano / gedit / copy-paste).
+
+```bash
+# example using cat (paste contents then Ctrl-D)
+cat > /home/shiza/Desktop/filetool.py
+# (paste the script)
+# Ctrl-D
+chmod +x /home/shiza/Desktop/filetool.py
+```
+
+4. **Run the automated demo** (this will create `/home/shiza/Desktop/filetool_demo` and `/home/shiza/Desktop/integrity.db`):
+
+```bash
+python3 /home/shiza/Desktop/filetool.py demo
+```
+
+5. **What the demo does (and what you will show)**:
+
+* Creates `/home/shiza/Desktop/filetool_demo/secret.txt` with example content.
+* Initializes DB at `/home/shiza/Desktop/integrity.db`.
+* Adds baseline hash for `secret.txt` to DB.
+* Encrypts `secret.txt` to `secret.txt.enc` (password used in demo: `TestPass123!`).
+* Verifies `secret.txt` (before tamper) → shows stored and current hash (match).
+* Appends "malicious change" to `secret.txt` (simulates tampering).
+* Verifies `secret.txt` again → shows mismatch detected.
+* Decrypts `secret.txt.enc` back to `secret_decrypted.txt` and prints contents (original file before tamper).
+* Prints DB rows for demo files.
+
+6. **If you prefer to run manually in front of the teacher**, here are the exact commands (copy-paste in order):
+
+```bash
+# initialize DB
+python3 /home/shiza/Desktop/filetool.py init-db
+
+# create demo file
+mkdir -p /home/shiza/Desktop/manual_demo
+echo "Top secret content — demo" > /home/shiza/Desktop/manual_demo/secret.txt
+cat /home/shiza/Desktop/manual_demo/secret.txt
+
+# add baseline hash
+python3 /home/shiza/Desktop/filetool.py add-hash /home/shiza/Desktop/manual_demo/secret.txt
+
+# encrypt (you'll be prompted for password if -p omitted)
+python3 /home/shiza/Desktop/filetool.py encrypt /home/shiza/Desktop/manual_demo/secret.txt -o /home/shiza/Desktop/manual_demo/secret.txt.enc -p "TestPass123!"
+
+# verify (should be OK)
+python3 /home/shiza/Desktop/filetool.py verify /home/shiza/Desktop/manual_demo/secret.txt
+
+# tamper the file (in front of teacher)
+echo "malicious change" >> /home/shiza/Desktop/manual_demo/secret.txt
+
+# verify again (should show mismatch)
+python3 /home/shiza/Desktop/filetool.py verify /home/shiza/Desktop/manual_demo/secret.txt
+
+# decrypt encrypted file back to plaintext
+python3 /home/shiza/Desktop/filetool.py decrypt /home/shiza/Desktop/manual_demo/secret.txt.enc -o /home/shiza/Desktop/manual_demo/secret_decrypted.txt -p "TestPass123!"
+cat /home/shiza/Desktop/manual_demo/secret_decrypted.txt
+
+# show DB contents
+sqlite3 /home/shiza/Desktop/integrity.db "SELECT id, path, sha256, added_at FROM files;"
+```
+
+---
+
+## Notes & suggestions for presentation
+
+* Start by running `python3 /home/shiza/Desktop/filetool.py -h` to show all commands.
+* Run the **automated demo** in front of your teacher for a quick one-command demo.
+* If you want to be extra careful, **don't** show passwords on-screen; omit `-p` to enter the password interactively.
+* Mention the security design: AES-GCM (authenticated encryption), PBKDF2 for key derivation, SHA-256 for file checksums, DB stores baseline hashes with timestamps.
+* Explain limitations: DB is unencrypted — for production you'd protect or encrypt it, and use Argon2 as KDF for more modern protection.
+
+---
+
+If you want, I can:
+
+* Create a printable **one-page README** tailored to hand to your teacher (with the exact commands and expected outputs), or
+* Modify the demo to use an interactive password prompt instead of an in-script fixed password (more secure for a live demo).
+
+Which would you like?
