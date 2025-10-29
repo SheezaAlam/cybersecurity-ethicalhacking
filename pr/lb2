@@ -1,347 +1,83 @@
-#!/usr/bin/env python3
-import argparse
-import hashlib
 import os
+import sys
 import sqlite3
-import time
+import hashlib
+import base64
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random import get_random_bytes
-
-DB_PATH = os.path.join(os.path.dirname(__file__), "integrity.db")
-
-# ---------- DATABASE FUNCTIONS ----------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS files(
-            path TEXT PRIMARY KEY,
-            sha256 TEXT,
-            added_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-    print(f"[+] Initialized DB at {DB_PATH}")
-
-def add_hash(filepath):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
-    sha256 = get_hash(filepath)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("REPLACE INTO files(path, sha256, added_at) VALUES (?, ?, ?)",
-              (os.path.abspath(filepath), sha256, time.strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
-    print(f"[+] Added/updated hash for {filepath}")
-
-def verify_file(filepath):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT sha256 FROM files WHERE path=?", (os.path.abspath(filepath),))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        print("[-] File not in DB:", filepath)
-        return
-    stored_hash = row[0]
-    current_hash = get_hash(filepath)
-    print(f"[i] Stored:  {stored_hash}")
-    print(f"[i] Current: {current_hash}")
-    if stored_hash == current_hash:
-        print("[+] OK — hashes match.")
-    else:
-        print("[-] MISMATCH — file modified or corrupted!")
-
-def get_hash(filepath):
-    h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(4096):
-            h.update(chunk)
-    return h.hexdigest()
-
-# ---------- ENCRYPTION / DECRYPTION ----------
-def encrypt_file(filepath, password):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
-    salt = get_random_bytes(16)
-    key = PBKDF2(password, salt, dkLen=32, count=100000)
-    cipher = AES.new(key, AES.MODE_GCM)
-    with open(filepath, "rb") as f:
-        data = f.read()
-    ciphertext, tag = cipher.encrypt_and_digest(data)
-    out = salt + cipher.nonce + tag + ciphertext
-    out_path = filepath + ".enc"
-    with open(out_path, "wb") as f:
-        f.write(out)
-    print(f"[+] Encrypted {filepath} -> {out_path}")
-
-def decrypt_file(filepath, password, output=None):
-    if not os.path.exists(filepath):
-        print("[-] Encrypted file not found:", filepath)
-        return
-    with open(filepath, "rb") as f:
-        data = f.read()
-    salt, nonce, tag, ciphertext = data[:16], data[16:32], data[32:48], data[48:]
-    key = PBKDF2(password, salt, dkLen=32, count=100000)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-    out_path = output if output else filepath.replace(".enc", "_decrypted.txt")
-    with open(out_path, "wb") as f:
-        f.write(plaintext)
-    print(f"[+] Decrypted {filepath} -> {out_path}")
-
-# ---------- DEMO ----------
-def run_demo():
-    print("\n[★] Running demo of File Encryption & Integrity Checker...\n")
-    demo_file = "/home/shiza/Desktop/secret.txt"
-    password = "TestPass123!"
-    os.chdir("/home/shiza/Desktop")
-
-    # Step 1: Create demo file
-    with open(demo_file, "w") as f:
-        f.write("Top secret content — demo\n")
-    print(f"[1] Created file: {demo_file}")
-
-    # Step 2: Initialize DB
-    init_db()
-
-    # Step 3: Add baseline hash
-    add_hash(demo_file)
-
-    # Step 4: Encrypt file
-    encrypt_file(demo_file, password)
-
-    # Step 5: Verify integrity (OK)
-    verify_file(demo_file)
-
-    # Step 6: Tamper file
-    with open(demo_file, "a") as f:
-        f.write("tampered!\n")
-    print("[!] Tampered file content manually.")
-    verify_file(demo_file)
-
-    # Step 7: Decrypt encrypted file
-    decrypt_file(demo_file + ".enc", password, "/home/shiza/Desktop/secret_decrypted.txt")
-
-    print("\n[✔] Demo complete! Check your Desktop for generated files.\n")
-
-# ---------- MAIN ----------
-def main():
-    parser = argparse.ArgumentParser(description="File Encryption & Integrity Checker")
-    sub = parser.add_subparsers(dest="cmd")
-
-    sub.add_parser("init-db")
-    p_add = sub.add_parser("add-hash"); p_add.add_argument("file")
-    p_ver = sub.add_parser("verify"); p_ver.add_argument("file")
-    p_enc = sub.add_parser("encrypt"); p_enc.add_argument("file"); p_enc.add_argument("-p", "--password", required=True)
-    p_dec = sub.add_parser("decrypt"); p_dec.add_argument("file"); p_dec.add_argument("-p", "--password", required=True); p_dec.add_argument("-o", "--output")
-    sub.add_parser("demo")
-
-    args = parser.parse_args()
-
-    if args.cmd == "init-db":
-        init_db()
-    elif args.cmd == "add-hash":
-        add_hash(args.file)
-    elif args.cmd == "verify":
-        verify_file(args.file)
-    elif args.cmd == "encrypt":
-        encrypt_file(args.file, args.password)
-    elif args.cmd == "decrypt":
-        decrypt_file(args.file, args.password, args.output)
-    elif args.cmd == "demo":
-        run_demo()
-    else:
-        parser.print_help()
-
-if __name__ == "__main__":
-    main() python3 /home/shiza/Desktop/filetool.py decrypt /home/shiza/Desktop/secret.txt.enc -p "TestPass123" -o /home/shiza/Desktop/secret_decrypted.txt
-Traceback (most recent call last):
-  File "/home/shiza/Desktop/filetool.py", line 166, in <module>
-    main()
-    ~~~~^^
-  File "/home/shiza/Desktop/filetool.py", line 159, in main
-    decrypt_file(args.file, args.password, args.output)
-    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/shiza/Desktop/filetool.py", line 95, in decrypt_file
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-  File "/home/shiza/venv/lib/python3.13/site-packages/Crypto/Cipher/_mode_gcm.py", line 567, in decrypt_and_verify                                        
-    self.verify(received_mac_tag)
-    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
-  File "/home/shiza/venv/lib/python3.13/site-packages/Crypto/Cipher/_mode_gcm.py", line 508, in verify                                                    
-    raise ValueError("MAC check failed")
-ValueError: MAC check failed
-#!/usr/bin/env python3
 import argparse
-import hashlib
-import os
-import sqlite3
-import time
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Random import get_random_bytes
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "integrity.db")
+# ---------- Database setup ----------
+DB_PATH = "/home/shiza/Desktop/file_integrity.db"
 
-# ---------- DATABASE FUNCTIONS ----------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS files(
-            path TEXT PRIMARY KEY,
-            sha256 TEXT,
-            added_at TEXT
-        )
-    """)
+    c.execute('''CREATE TABLE IF NOT EXISTS files (
+                    filename TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL
+                )''')
     conn.commit()
     conn.close()
-    print(f"[+] Initialized DB at {DB_PATH}")
 
-def add_hash(filepath):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
-    sha256 = get_hash(filepath)
+# ---------- Hashing ----------
+def compute_hash(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(chunk)
+    return sha256_hash.hexdigest()
+
+# ---------- Integrity Functions ----------
+def store_hash(filename, hash_value):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("REPLACE INTO files(path, sha256, added_at) VALUES (?, ?, ?)",
-              (os.path.abspath(filepath), sha256, time.strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute("REPLACE INTO files (filename, hash) VALUES (?, ?)", (filename, hash_value))
     conn.commit()
     conn.close()
-    print(f"[+] Added/updated hash for {filepath}")
 
-def verify_file(filepath):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
+def check_integrity(filename):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT sha256 FROM files WHERE path=?", (os.path.abspath(filepath),))
+    c.execute("SELECT hash FROM files WHERE filename=?", (filename,))
     row = c.fetchone()
     conn.close()
+
     if not row:
-        print("[-] File not in DB:", filepath)
+        print(f"⚠️ No stored hash found for {filename}. Please store it first using integrity-check.")
         return
+
     stored_hash = row[0]
-    current_hash = get_hash(filepath)
-    print(f"[i] Stored:  {stored_hash}")
-    print(f"[i] Current: {current_hash}")
+    current_hash = compute_hash(filename)
+
     if stored_hash == current_hash:
-        print("[+] OK — hashes match.")
+        print(f"✅ File integrity OK — {filename} has not been tampered with.")
     else:
-        print("[-] MISMATCH — file modified or corrupted!")
+        print(f"❌ ALERT: {filename} has been modified or tampered!")
 
-def get_hash(filepath):
-    h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(4096):
-            h.update(chunk)
-    return h.hexdigest()
-
-# ---------- ENCRYPTION / DECRYPTION ----------
-def encrypt_file(filepath, password):
-    if not os.path.exists(filepath):
-        print("[-] File not found:", filepath)
-        return
+# ---------- Encryption ----------
+def encrypt_file(file_path, password, output_path):
     salt = get_random_bytes(16)
-    key = PBKDF2(password, salt, dkLen=32, count=100000)
+    key = PBKDF2(password, salt, dkLen=32)
     cipher = AES.new(key, AES.MODE_GCM)
-    with open(filepath, "rb") as f:
-        data = f.read()
-    ciphertext, tag = cipher.encrypt_and_digest(data)
-    out = salt + cipher.nonce + tag + ciphertext
-    out_path = filepath + ".enc"
-    with open(out_path, "wb") as f:
-        f.write(out)
-    print(f"[+] Encrypted {filepath} -> {out_path}")
+    with open(file_path, "rb") as f:
+        plaintext = f.read()
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    with open(output_path, "wb") as f:
+        [f.write(x) for x in (salt, cipher.nonce, tag, ciphertext)]
+    print(f"🔒 File encrypted successfully → {output_path}")
 
-def decrypt_file(filepath, password, output=None):
-    if not os.path.exists(filepath):
-        print("[-] Encrypted file not found:", filepath)
-        return
-    with open(filepath, "rb") as f:
-        data = f.read()
-    salt, nonce, tag, ciphertext = data[:16], data[16:32], data[32:48], data[48:]
-    key = PBKDF2(password, salt, dkLen=32, count=100000)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-    out_path = output if output else filepath.replace(".enc", "_decrypted.txt")
-    with open(out_path, "wb") as f:
-        f.write(plaintext)
-    print(f"[+] Decrypted {filepath} -> {out_path}")
-
-# ---------- DEMO ----------
-def run_demo():
-    print("\n[★] Running demo of File Encryption & Integrity Checker...\n")
-    demo_file = "/home/shiza/Desktop/secret.txt"
-    password = "TestPass123!"
-    os.chdir("/home/shiza/Desktop")
-
-    # Step 1: Create demo file
-    with open(demo_file, "w") as f:
-        f.write("Top secret content — demo\n")
-    print(f"[1] Created file: {demo_file}")
-
-    # Step 2: Initialize DB
-    init_db()
-
-    # Step 3: Add baseline hash
-    add_hash(demo_file)
-
-    # Step 4: Encrypt file
-    encrypt_file(demo_file, password)
-
-    # Step 5: Verify integrity (OK)
-    verify_file(demo_file)
-
-    # Step 6: Tamper file
-    with open(demo_file, "a") as f:
-        f.write("tampered!\n")
-    print("[!] Tampered file content manually.")
-    verify_file(demo_file)
-
-    # Step 7: Decrypt encrypted file
-    decrypt_file(demo_file + ".enc", password, "/home/shiza/Desktop/secret_decrypted.txt")
-
-    print("\n[✔] Demo complete! Check your Desktop for generated files.\n")
-
-# ---------- MAIN ----------
-def main():
-    parser = argparse.ArgumentParser(description="File Encryption & Integrity Checker")
-    sub = parser.add_subparsers(dest="cmd")
-
-    sub.add_parser("init-db")
-    p_add = sub.add_parser("add-hash"); p_add.add_argument("file")
-    p_ver = sub.add_parser("verify"); p_ver.add_argument("file")
-    p_enc = sub.add_parser("encrypt"); p_enc.add_argument("file"); p_enc.add_argument("-p", "--password", required=True)
-    p_dec = sub.add_parser("decrypt"); p_dec.add_argument("file"); p_dec.add_argument("-p", "--password", required=True); p_dec.add_argument("-o", "--output")
-    sub.add_parser("demo")
-
-    args = parser.parse_args()
-
-    if args.cmd == "init-db":
-        init_db()
-    elif args.cmd == "add-hash":
-        add_hash(args.file)
-    elif args.cmd == "verify":
-        verify_file(args.file)
-    elif args.cmd == "encrypt":
-        encrypt_file(args.file, args.password)
-    elif args.cmd == "decrypt":
-        decrypt_file(args.file, args.password, args.output)
-    elif args.cmd == "demo":
-        run_demo()
-    else:
-        parser.print_help()
-
-if __name__ == "__main__":
-    main()
+# ---------- Decryption ----------
+def decrypt_file(file_path, password, output_path):
+    try:
+        with open(file_path, "rb") as f:
+            salt, nonce, tag, ciphertext = [f.read(x) for x in (16, 16, 16, -1)]
+        key = PBKDF2(password, salt, dkLen=32)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+        with open(output_path, "wb") as f:
+            f.write(plaintext)
+        print(f"🔓 File decrypted successfully → {output_path}")
+    except ValueError:
+        print("❌ Decryption failed! The password may be incorrect o
