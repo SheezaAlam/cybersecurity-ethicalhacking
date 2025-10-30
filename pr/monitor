@@ -1,0 +1,102 @@
+## 🧠 Project Title
+
+**Managing File Integrity Using AIDE (Advanced Intrusion Detection Environment)**
+
+---
+
+## 🎯 **Aim**
+
+To demonstrate how AIDE can be used to **monitor, detect, and report unauthorized changes** to system or user files by maintaining a database of file hashes.
+
+---
+
+## 🧩 **Concept Explanation**
+
+AIDE works like a **snapshot tool**:
+
+* During initialization (`aide --init`), it scans files and stores **cryptographic hashes** (SHA, MD5) in a database.
+* When you later run a check (`aide --check`), it compares **current hashes** to the database.
+* If any file has been **modified, deleted, or added**, AIDE reports it.
+
+✅ This ensures **file integrity** and helps detect **tampering or intrusions**.
+
+---
+
+## ⚙️ **Steps for Demo (Fast Version for Class Presentation)**
+
+### 🪄 Step 1: Create a smaller config (for faster results)
+
+```bash
+sudo cp /etc/aide/aide.conf /etc/aide/aide-demo.conf
+sudo nano /etc/aide/aide-demo.conf
+```
+
+Paste this inside:
+
+```
+database=file:/var/lib/aide/aide.db
+database_out=file:/var/lib/aide/aide.db.new
+gzip_dbout=no
+
+/home/shiza/Desktop   R
+```
+
+💡 *We’ll only check the Desktop folder to save time.*
+
+---
+
+### 🧱 Step 2: Initialize AIDE (create baseline)
+
+```bash
+sudo aide --init -c /etc/aide/aide-demo.conf
+```
+
+➡️ This scans `/home/shiza/Desktop` and creates `/var/lib/aide/aide.db.new`.
+
+Then activate it:
+
+```bash
+sudo cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
+
+---
+
+### 🔍 Step 3: Verify Integrity
+
+Now check for changes:
+
+```bash
+sudo aide --check -c /etc/aide/aide-demo.conf
+```
+
+If no files changed:
+
+```
+AIDE found no differences between database and filesystem. Looks okay!!
+```
+
+---
+
+### 🧪 Step 4: Simulate File Tampering
+
+Edit a file to simulate unauthorized modification:
+
+```bash
+echo "hacked content" >> /home/shiza/Desktop/secret.txt
+```
+
+Then run:
+
+```bash
+sudo aide --check -c /etc/aide/aide-demo.conf
+```
+
+Output:
+
+```
+Changed entries:
+   /home/shiza/Desktop/secret.txt
+```
+
+✅ This proves AIDE detected a file modification.
+
