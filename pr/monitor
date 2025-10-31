@@ -1,102 +1,215 @@
-## 🧠 Project Title
+Perfect 👍 here’s your **clean and final version** of `filetool.py` — it includes:
 
-**Managing File Integrity Using AIDE (Advanced Intrusion Detection Environment)**
-
----
-
-## 🎯 **Aim**
-
-To demonstrate how AIDE can be used to **monitor, detect, and report unauthorized changes** to system or user files by maintaining a database of file hashes.
-
----
-
-## 🧩 **Concept Explanation**
-
-AIDE works like a **snapshot tool**:
-
-* During initialization (`aide --init`), it scans files and stores **cryptographic hashes** (SHA, MD5) in a database.
-* When you later run a check (`aide --check`), it compares **current hashes** to the database.
-* If any file has been **modified, deleted, or added**, AIDE reports it.
-
-✅ This ensures **file integrity** and helps detect **tampering or intrusions**.
+* File encryption
+* File decryption
+* File integrity check (with SQLite database)
+* User-friendly messages
+* Stored hashes in `/home/shiza/Desktop/file_integrity.db`
+* Graceful handling of password or tampered file errors
 
 ---
 
-## ⚙️ **Steps for Demo (Fast Version for Class Presentation)**
+### 🧩 Save this as:
 
-### 🪄 Step 1: Create a smaller config (for faster results)
+`/home/shiza/Desktop/filetool.py`
 
-```bash
-sudo cp /etc/aide/aide.conf /etc/aide/aide-demo.conf
-sudo nano /etc/aide/aide-demo.conf
+```python
+import os
+import sys
+import sqlite3
+import hashlib
+import base64
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Random import get_random_bytes
+import argparse
+
+# ---------- Database setup ----------
+DB_PATH = "/home/shiza/Desktop/file_integrity.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS files (
+                    filename TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL
+                )''')
+    conn.commit()
+    conn.close()
+
+# ---------- Hashing ----------
+def compute_hash(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(chunk)
+    return sha256_hash.hexdigest()
+
+# ---------- Integrity Functions ----------
+def store_hash(filename, hash_value):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("REPLACE INTO files (filename, hash) VALUES (?, ?)", (filename, hash_value))
+    conn.commit()
+    conn.close()
+
+def check_integrity(filename):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT hash FROM files WHERE filename=?", (filename,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        print(f"⚠️ No stored hash found for {filename}. Please store it first using integrity-check.")
+        return
+
+    stored_hash = row[0]
+    current_hash = compute_hash(filename)
+
+    if stored_hash == current_hash:
+        print(f"✅ File integrity OK — {filename} has not been tampered with.")
+    else:
+        print(f"❌ ALERT: {filename} has been modified or tampered!")
+
+# ---------- Encryption ----------
+def encrypt_file(file_path, password, output_path):
+    salt = get_random_bytes(16)
+    key = PBKDF2(password, salt, dkLen=32)
+    cipher = AES.new(key, AES.MODE_GCM)
+    with open(file_path, "rb") as f:
+        plaintext = f.read()
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    with open(output_path, "wb") as f:
+        [f.write(x) for x in (salt, cipher.nonce, tag, ciphertext)]
+    print(f"🔒 File encrypted successfully → {output_path}")
+
+# ---------- Decryption ----------
+def decrypt_file(file_path, password, output_path):
+    try:
+        with open(file_path, "rb") as f:
+            salt, nonce, tag, ciphertext = [f.read(x) for x in (16, 16, 16, -1)]
+        key = PBKDF2(password, salt, dkLen=32)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+        with open(output_path, "wb") as f:
+            f.write(plaintext)
+        print(f"🔓 File decrypted successfully → {output_path}")
+    except ValueError:
+        print("❌ Decryption failed! The password may be incorrect or the file was tampered with.")
+    except Exception as e:
+        print(f"⚠️ Error: {e}")
+
+# ---------- Demo ----------
+def demo():
+    sample_path = "/home/shiza/Desktop/secret.txt"
+    encrypted_path = "/home/shiza/Desktop/secret.txt.enc"
+    decrypted_path = "/home/shiza/Desktop/secret_decrypted.txt"
+    password = "TestPass123"
+
+    # Create a sample file
+    with open(sample_path, "w") as f:
+        f.write("This is a secret message. Protect it carefully!")
+
+    print("\n--- Demo: Encrypting File ---")
+    encrypt_file(sample_path, password, encrypted_path)
+
+    print("\n--- Demo: Storing Integrity Hash ---")
+    file_hash = compute_hash(sample_path)
+    store_hash(sample_path, file_hash)
+    print(f"🧾 Hash stored in database for integrity check.\n")
+
+    print("--- Demo: Checking Integrity ---")
+    check_integrity(sample_path)
+
+    print("\n--- Demo: Decrypting File ---")
+    decrypt_file(encrypted_path, password, decrypted_path)
+
+# ---------- Main CLI ----------
+def main():
+    init_db()
+
+    parser = argparse.ArgumentParser(description="File Encryption + Integrity Checker Tool")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Encrypt
+    enc = subparsers.add_parser("encrypt")
+    enc.add_argument("file", help="Path to input file")
+    enc.add_argument("-p", "--password", required=True, help="Password for encryption")
+    enc.add_argument("-o", "--output", required=True, help="Output encrypted file path")
+
+    # Decrypt
+    dec = subparsers.add_parser("decrypt")
+    dec.add_argument("file", help="Path to encrypted file")
+    dec.add_argument("-p", "--password", required=True, help="Password for decryption")
+    dec.add_argument("-o", "--output", required=True, help="Output decrypted file path")
+
+    # Integrity Check
+    integ = subparsers.add_parser("integrity-check")
+    integ.add_argument("file", help="Path to file to check or store")
+    integ.add_argument("--store", action="store_true", help="Store hash instead of checking")
+
+    # Demo
+    subparsers.add_parser("demo")
+
+    args = parser.parse_args()
+
+    if args.command == "encrypt":
+        encrypt_file(args.file, args.password, args.output)
+    elif args.command == "decrypt":
+        decrypt_file(args.file, args.password, args.output)
+    elif args.command == "integrity-check":
+        if args.store:
+            hash_val = compute_hash(args.file)
+            store_hash(args.file, hash_val)
+            print(f"✅ Stored hash for {args.file}")
+        else:
+            check_integrity(args.file)
+    elif args.command == "demo":
+        demo()
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()
 ```
-
-Paste this inside:
-
-```
-database=file:/var/lib/aide/aide.db
-database_out=file:/var/lib/aide/aide.db.new
-gzip_dbout=no
-
-/home/shiza/Desktop   R
-```
-
-💡 *We’ll only check the Desktop folder to save time.*
 
 ---
 
-### 🧱 Step 2: Initialize AIDE (create baseline)
+### 🧠 What This Project Does
+
+| Function            | Description                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| **Encrypt File**    | Encrypts any file using AES-256-GCM with password-based key derivation                   |
+| **Decrypt File**    | Safely decrypts a file using the same password                                           |
+| **Integrity Check** | Computes and stores a SHA-256 hash in a database, later verifies if the file was changed |
+| **Demo Mode**       | Automatically runs all steps (encrypt → store hash → verify → decrypt)                   |
+
+---
+
+### 🚀 Run These Commands in Kali
 
 ```bash
-sudo aide --init -c /etc/aide/aide-demo.conf
+cd /home/shiza/Desktop
+python3 filetool.py demo
 ```
 
-➡️ This scans `/home/shiza/Desktop` and creates `/var/lib/aide/aide.db.new`.
-
-Then activate it:
+Then you can try manually:
 
 ```bash
-sudo cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+# Encrypt a file
+python3 filetool.py encrypt secret.txt -p "MyPass123" -o secret.enc
+
+# Decrypt it
+python3 filetool.py decrypt secret.enc -p "MyPass123" -o secret_decrypted.txt
+
+# Store file integrity hash
+python3 filetool.py integrity-check secret.txt --store
+
+# Later, check if file changed
+python3 filetool.py integrity-check secret.txt
 ```
 
 ---
 
-### 🔍 Step 3: Verify Integrity
-
-Now check for changes:
-
-```bash
-sudo aide --check -c /etc/aide/aide-demo.conf
-```
-
-If no files changed:
-
-```
-AIDE found no differences between database and filesystem. Looks okay!!
-```
-
----
-
-### 🧪 Step 4: Simulate File Tampering
-
-Edit a file to simulate unauthorized modification:
-
-```bash
-echo "hacked content" >> /home/shiza/Desktop/secret.txt
-```
-
-Then run:
-
-```bash
-sudo aide --check -c /etc/aide/aide-demo.conf
-```
-
-Output:
-
-```
-Changed entries:
-   /home/shiza/Desktop/secret.txt
-```
-
-✅ This proves AIDE detected a file modification.
 
