@@ -1,0 +1,12 @@
+| No.    | Vulnerability                              | Core Idea                                           | Example                                  | Key Defence                                     |
+| ------ | ------------------------------------------ | --------------------------------------------------- | ---------------------------------------- | ----------------------------------------------- |
+| **1**  | **Broken Access Control**                  | Users perform actions they shouldn’t                | Normal user accesses `/admin/deleteUser` | Enforce role-based access, server-side checks   |
+| **2**  | **Cryptographic Failure**                  | Sensitive data exposed due to weak/no encryption    | Plain text passwords, MD5                | AES, SHA-256, HTTPS, encrypt at rest            |
+| **3**  | **Injection**                              | Untrusted input interpreted as code                 | `' OR '1'='1` in SQL                     | Input validation, parameterized queries         |
+| **4**  | **Insecure Design**                        | Security not considered during app design           | Unlimited login attempts                 | Threat modeling (STRIDE), MFA, rate-limiting    |
+| **5**  | **Security Misconfiguration**              | Wrong/insecure setup                                | Default creds `admin:admin`, open ports  | Disable defaults, least privilege, patch config |
+| **6**  | **Vulnerable/Outdated Components**         | Old libraries with known flaws                      | Outdated WordPress plugin                | Regular updates, SCA tools                      |
+| **7**  | **Identification & Auth Failures**         | Weak password/session handling                      | Predictable tokens, no logout            | Strong passwords, random tokens, MFA            |
+| **8**  | **Software/Data Integrity Failures**       | Trusting unverified code/data                       | Malicious plugin download                | Verify signatures, use trusted sources          |
+| **9**  | **Security Logging & Monitoring Failures** | Attacks unnoticed                                   | No alerts on 1000 failed logins          | Enable detailed logs, alerts, IR plans          |
+| **10** | **SSRF (Server-Side Request Forgery)**     | Server fetches user-supplied URL to internal system | `url=http://127.0.0.1/admin`             | Validate URLs, block internal IPs, use proxy    |
